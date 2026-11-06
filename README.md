@@ -1,39 +1,26 @@
-# Buster Busts Loose! — PC port
+# Buster Busts Loose! — Nintendo Switch port
 
-A Windows port of *Tiny Toon Adventures: Buster Busts Loose!* (SNES, Konami 1993),
+
+A Nintendo Switch homebrew port of *Tiny Toon Adventures: Buster Busts Loose!* (SNES, Konami 1993),
 with widescreen, modern display options, gamepad support, cheats, a level select
 and a music player.
 
 The game itself runs from **your own copy of the original ROM**. The port contains no
 game code or assets; it runs the ROM on a built-in SNES core (LakeSnes) extended for
-widescreen, then adds game-specific patches and a PC frontend.
+widescreen, then adds game-specific patches and a frontend.
+
+Currently runs slow at about 30fps (60fps target) with heavy CPU overclocking required.
+This roughly matches the current Android port performance when ran on switch. 
 
 ## Getting started
 
-1. Put `BusterBustsLoose.exe` and `SDL2.dll` in a folder (nothing else needs installing).
-2. Put the ROM next to them:
+1. Put `BusterBustsLoose.nro` onto your SD card in the /switch/BusterBustsLoose subfolder
+2. Put the ROM in the same folder as the .nro:
    `Tiny Toon Adventures - Buster Busts Loose! (USA).sfc`
-   (1 MiB, CRC32 `AB48D27A`; headered copies are accepted too).
-3. Run `BusterBustsLoose.exe`.
+   (1 MiB, CRC32 `AB48D27A`; headered copies and .smc format is accepted too).
+3. Run from the homebrew launcher using Title override (hold R while launching a game)
 
-If the ROM isn't found next to the program, a message says which ROM is needed and a file
-dialog asks for it; the location is remembered. You can also pass a ROM path on the command
-line or drag a ROM onto the exe. Any other file is rejected with a message naming what it
-is, read from the ROM's internal header: the European (PAL) or Japanese version, a modified
-USA ROM (hack or bad dump), or not a SNES game at all.
-
-**On Android** (64-bit phones and tablets, Android 5.0 or later):
-1. Download the APK from the Releases page and open it on your phone. Android asks you to
-   allow installing apps from your browser or file manager the first time.
-2. Copy your ROM to the phone.
-3. Start the app and tap **Choose ROM**. It's copied into the app, so you only do this once.
-
-Touch controls appear on screen. A Bluetooth or USB controller works too, and hides them.
-Tap **MENU** or use the Back gesture for the menu.
-
-Press **Esc** or **Select** (keyboard: Right Shift; gamepad: Back / View / Share / Minus)
-to open the menu. The game only uses Select as a second Start button, so the port takes
-it over; you can turn that off under Controls, and Select + Start then opens the menu instead.
+Touch controls appear on screen when tapped. Using joycon or pro controller works and hides on screen controls.
 
 ## Features
 
@@ -66,8 +53,6 @@ it over; you can turn that off under Controls, and Select + Start then opens the
   are drawn for exactly 256 pixels, so there is nothing correct to show at the sides.
 
 **Video**
-- Windowed, borderless fullscreen or exclusive fullscreen (F11), monitor selection and
-  window size. Rendering uses Direct3D 11 (falls back to other renderers if unavailable).
 - Aspect ratio: 4:3 CRT (the original 8:7 pixel shape), square pixels, or stretch.
 - Upscale filters: Scale2x, Scale3x, Scale4x, xBR 2x, xBR 4x.
 - Scaling: sharp, smooth, sharp-bilinear (crisp at any size) or integer.
@@ -146,36 +131,8 @@ that folder isn't writable. Delete `bbl.ini` to restore defaults.
 
 ## Building from source
 
-Requirements: Visual Studio 2022 (C compiler) and CMake 3.16+. SDL2 2.32.10 comes with
-the source (its headers and the x64 libraries, in `third_party/SDL2-2.32.10`); the full
-SDL2 development package for Visual C++ can be dropped in there instead.
-
-```
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-```
-
-Or run `package.ps1`, which builds and copies everything into `dist\BusterBustsLoose`.
-
-### Android
-
-The same code builds for Android (`android/`), with SDL2 compiled from source. You need
-the Android SDK with NDK 28.2 and CMake 3.31.6 (both from the SDK manager) and JDK 17–21
-for Gradle.
-
-```
-powershell android\fetch_sdl.ps1
-cd android
-gradlew assembleDebug
-```
-
-The APK ends up in `android/app/build/outputs/apk/`. On a phone:
-- The ROM is picked once with Android's file picker and copied into the app's storage.
-- Settings and saves live in app storage too.
-- The picture fills the screen (widescreen "Fit window").
-- On-screen touch controls appear (Controls > Touch controls). A Bluetooth or USB
-  controller works too, and hides them.
-- Back opens the menu.
+Requires DevKitPro & SDL2 ~ MSYS2 on windows:
+clone this repo, navigate to the directory it saves in and use make in project root. It will generate the .nro
 
 ### Source layout
 
@@ -493,3 +450,4 @@ The APK ends up in `android/app/build/outputs/apk/`. On a phone:
 - Cascadia Mono by Microsoft (menu text, baked into `src/uifont.h` by `tools/genfont.py`),
   SIL Open Font License 1.1 (`licenses/CascadiaMono.txt`).
 - Cheat addresses are based on the published Pro Action Replay codes for the USA release.
+- Original PC & Android port by [Darhkfox](https://www.github.com/Darhkfox)
