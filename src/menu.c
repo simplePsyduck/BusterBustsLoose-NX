@@ -190,8 +190,8 @@ static void pageVideo(void) {
   static const char* const limitNames[] = { "Original", "Unlimited" };
   title("VIDEO");
   header("Display");
-#ifdef __ANDROID__
-  // (a phone shows the game on the whole screen: no window, monitor or size)
+#ifdef BBL_FIXED_SCREEN
+  // (a phone or console shows the game on the whole screen: no window, monitor or size)
   (void)displayNames;
 #else
   if(choice("Display mode", &cfg.displayMode, displayNames, DISPLAY_COUNT, "Windowed, borderless fullscreen or exclusive fullscreen (F11)")) app_applyVideo();

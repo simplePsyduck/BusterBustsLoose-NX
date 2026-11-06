@@ -3,6 +3,11 @@
 #include <stdbool.h>
 #include "bbl.h"
 
+// The window is always the whole screen (phone, console): no window mode, monitor or size.
+#if defined(__ANDROID__) || defined(__SWITCH__)
+#define BBL_FIXED_SCREEN 1
+#endif
+
 Bbl* app_game(void);
 void app_applyVideo(void);         // window mode, size, vsync
 void app_applyGameSettings(void);  // widescreen, colours, sprite limit, cheats

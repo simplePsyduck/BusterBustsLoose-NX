@@ -35,6 +35,12 @@
 #include <unistd.h>
 #include <jni.h>
 #endif
+#ifndef _WIN32
+#include <dirent.h>
+#endif
+#ifdef __SWITCH__
+#include "switch_platform.h"
+#endif
 
 #define APP_TITLE "Buster Busts Loose!"
 
@@ -173,7 +179,7 @@ static int targetDisplay(void) {
 }
 
 static void resizeWindowToScale(void) {
-#ifdef __ANDROID__
+#ifdef BBL_FIXED_SCREEN
   return;   // (the window is the whole screen)
 #endif
   if(cfg.displayMode != DISPLAY_WINDOWED) return;
@@ -193,7 +199,7 @@ static void resizeWindowToScale(void) {
 }
 
 void app_applyVideo(void) {
-#ifdef __ANDROID__
+#ifdef BBL_FIXED_SCREEN
   // (always the whole screen: only V-Sync applies)
   SDL_RenderSetVSync(app.ren, cfg.vsync ? 1 : 0);
   return;
@@ -527,6 +533,9 @@ static void renderFrame(void) {
     k = (dst.h + h - 1) / h;
     if(k < 1) k = 1;
     if(k > 6) k = 6;
+#ifdef __SWITCH__
+    if(k > 2) k = 2;   // (a bigger CPU pre-scale costs the console more than it gains)
+#endif
   }
   SDL_ScaleMode mode = (cfg.scaling == SCALE_SHARP || cfg.scaling == SCALE_INTEGER) ? SDL_ScaleModeNearest : SDL_ScaleModeLinear;
   ensureGameTexture(w * k, h * k, mode);
@@ -697,7 +706,20 @@ static Bbl* searchDir(const char* dir) {
     _findclose(hnd);
   }
 #else
-  (void)dir;
+  // (dir ends with '/'): the first file with a ROM extension that the port accepts
+  DIR* d = opendir(dir);
+  if(!d) return NULL;
+  struct dirent* de;
+  while((de = readdir(d))) {
+    const char* dot = strrchr(de->d_name, '.');
+    if(!dot) continue;
+    if(SDL_strcasecmp(dot, ".sfc") && SDL_strcasecmp(dot, ".smc") && SDL_strcasecmp(dot, ".swc") && SDL_strcasecmp(dot, ".fig")) continue;
+    char path[1200], err[512];
+    snprintf(path, sizeof(path), "%s%s", dir, de->d_name);
+    Bbl* g = tryRom(path, err, sizeof(err));
+    if(g) { closedir(d); return g; }
+  }
+  closedir(d);
 #endif
   return NULL;
 }
@@ -752,6 +774,54 @@ static bool androidPickRom(char* out, int size) {
 }
 #endif
 
+#ifdef __SWITCH__
+// The console has no message boxes or file dialogs: window and renderer are
+// created before the ROM search so a problem can be shown on screen.
+static bool switchCreateVideo(void) {
+  app.win = SDL_CreateWindow(APP_TITLE, 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);   // (follows handheld / docked)
+  if(!app.win) return false;
+  app.ren = SDL_CreateRenderer(app.win, -1, SDL_RENDERER_ACCELERATED | (cfg.vsync ? SDL_RENDERER_PRESENTVSYNC : 0));
+  if(!app.ren) app.ren = SDL_CreateRenderer(app.win, -1, 0);
+  if(!app.ren) return false;
+  ui_init(app.ren);
+  return true;
+}
+
+// Shows msg (lines split at '\n') until A, B or + is pressed.
+static void switchMessage(const char* msg) {
+  switch_confirmPressed();   // (first call: just takes the buttons already held)
+  for(;;) {
+    SDL_Event e;
+    while(SDL_PollEvent(&e)) if(e.type == SDL_QUIT) return;
+    int W, H;
+    SDL_GetRendererOutputSize(app.ren, &W, &H);
+    SDL_SetRenderDrawColor(app.ren, 16, 18, 40, 255);
+    SDL_RenderClear(app.ren);
+    int s = H / 270;
+    if(s < 1) s = 1;
+    int x = 6 * 8 * s, y = 4 * 8 * s;
+    ui_textShadow(x, y, APP_TITLE, UI_YELLOW, s * 2);
+    y += 3 * 8 * s * 2;
+    const char* p = msg;
+    while(*p) {
+      const char* nl = strchr(p, '\n');
+      int len = nl ? (int)(nl - p) : (int)strlen(p);
+      char line[256];
+      if(len > 255) len = 255;
+      memcpy(line, p, len);
+      line[len] = 0;
+      ui_textShadow(x, y, line, UI_WHITE, s);
+      y += 12 * s;
+      p += len;
+      if(*p == '\n') p++;
+    }
+    SDL_RenderPresent(app.ren);
+    if(switch_confirmPressed()) return;
+    SDL_Delay(16);
+  }
+}
+#endif
+
 static Bbl* findRom(int argc, char** argv) {
   char err[512] = {0};
   Bbl* g = NULL;
@@ -788,6 +858,10 @@ static Bbl* findRom(int argc, char** argv) {
       remove(path);
     }
   }
+#elif defined(__SWITCH__)
+  // no file dialog on the console: the ROM sits in the app's folder on the SD card
+  if(!g) g = searchDir(app.baseDir);
+  if(!g && strcmp(app.baseDir, SWITCH_APP_DIR)) g = searchDir(SWITCH_APP_DIR);
 #else
   if(!g) g = searchDir(app.baseDir);
   if(!g) {
@@ -805,6 +879,19 @@ static Bbl* findRom(int argc, char** argv) {
       g = searchDir(up);
       strcat(up, "..\\");
     }
+  }
+#endif
+#ifdef __SWITCH__
+  if(!g) {
+    char msg[1024];
+    if(romRejected[0]) snprintf(msg, sizeof(msg), "A ROM was found but it isn't the right version.\n\n%s\n\n"
+      "Use the USA version and copy it to:\n    %s\n\nPress A or + to exit.", romRejected, SWITCH_APP_DIR);
+    else snprintf(msg, sizeof(msg), "This port needs the original game ROM to run:\n\n"
+      "    Tiny Toon Adventures - Buster Busts Loose! (USA)\n\n"
+      "Copy the .sfc file to this folder on the SD card:\n    %s\n"
+      "then start the app again.\n\nPress A or + to exit.", SWITCH_APP_DIR);
+    switchMessage(msg);
+    return NULL;
   }
 #endif
   if(!g && romRejected[0]) {
@@ -1073,6 +1160,9 @@ static LONG WINAPI crashHandler(EXCEPTION_POINTERS* ep) {
 #endif
 
 int main(int argc, char** argv) {
+#ifdef __SWITCH__
+  switch_init();
+#endif
 #ifdef _WIN32
   SetUnhandledExceptionFilter(crashHandler);
   SetProcessDPIAware();
@@ -1087,10 +1177,16 @@ int main(int argc, char** argv) {
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, APP_TITLE, SDL_GetError(), NULL);
     return 1;
   }
+#ifdef __SWITCH__
+  switch_setupPads();
+#endif
 #ifdef __ANDROID__
   // settings, saves and the ROM live in the app's own storage
   const char* internal = SDL_AndroidGetInternalStoragePath();
   snprintf(app.baseDir, sizeof(app.baseDir), "%s/", internal ? internal : ".");
+#elif defined(__SWITCH__)
+  // settings, saves and the ROM live in the folder the .nro was started from
+  snprintf(app.baseDir, sizeof(app.baseDir), "%s", switch_baseDir(argc, argv));
 #else
   char* base = SDL_GetBasePath();
   snprintf(app.baseDir, sizeof(app.baseDir), "%s", base ? base : ".\\");
@@ -1114,12 +1210,19 @@ int main(int argc, char** argv) {
   for(int i = 1; i < argc - 1; i++) {
     if(!strcmp(argv[i], "--script")) scriptFile = fopen(argv[i + 1], "r");
   }
+#ifdef __SWITCH__
+  if(!switchCreateVideo()) {
+    fprintf(stderr, "video init failed: %s\n", SDL_GetError());
+    return 1;
+  }
+#endif
   app.game = findRom(argc, argv);
   if(!app.game) { SDL_Quit(); return 1; }
   cheats_init(app.game);
   hud_init(app.game);
   bg_start(app.romPath);
 
+#ifndef __SWITCH__   // (the console's window and renderer were created before the ROM search)
   int pw, ph;
   pictureSize(&pw, &ph);
   int startDisp = targetDisplay();
@@ -1147,6 +1250,7 @@ int main(int argc, char** argv) {
   }
   if(!app.ren) app.ren = SDL_CreateRenderer(app.win, -1, 0);
   ui_init(app.ren);
+#endif
   in_init();
   if(!audio_init()) app_toast("No audio device");
   app_applyVideo();
@@ -1158,6 +1262,8 @@ int main(int argc, char** argv) {
   app.fpsTicks = SDL_GetTicks();
 #ifdef __ANDROID__
   app_toast("Tap MENU or press Back for the menu");
+#elif defined(__SWITCH__)
+  app_toast(cfg.selectOpensMenu ? "Minus (-) opens the menu" : "Minus + Plus opens the menu");
 #else
   app_toast(cfg.selectOpensMenu ? "Esc or Select opens the menu" : "Esc or Select+Start opens the menu");
 #endif
@@ -1287,5 +1393,8 @@ int main(int argc, char** argv) {
   SDL_DestroyRenderer(app.ren);
   SDL_DestroyWindow(app.win);
   SDL_Quit();
+#ifdef __SWITCH__
+  switch_shutdown();
+#endif
   return 0;
 }

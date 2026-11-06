@@ -57,7 +57,12 @@ void bg_start(const char* path) {
   snprintf(romPath, sizeof(romPath), "%s", path);
   SDL_AtomicSet(&status, 0);
   SDL_AtomicSet(&stopping, 0);
+#ifdef __SWITCH__
+  // (an explicit stack: the console's default for SDL threads is small)
+  thread = SDL_CreateThreadWithStackSize(worker, "bbl-prepare", 1024 * 1024, NULL);
+#else
   thread = SDL_CreateThread(worker, "bbl-prepare", NULL);
+#endif
   if(!thread) SDL_AtomicSet(&status, 2);
 }
 

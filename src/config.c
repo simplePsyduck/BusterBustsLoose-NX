@@ -91,6 +91,10 @@ void config_defaults(Settings* s) {
 #ifdef __ANDROID__
   s->fastForward = 0;     // (its button would sit over the picture)
 #endif
+#ifdef __SWITCH__
+  // (the 720p / 1080p screen is no whole multiple of the picture: sharp bilinear keeps pixels even)
+  s->scaling = SCALE_SHARP_BILINEAR;
+#endif
   s->saveSlot = 1;
   s->levelDifficulty = 1;
   s->skipIntro = 1;
