@@ -1,0 +1,54 @@
+# Nintendo Switch homebrew build (experimental proof of concept)
+
+Runs the same SDL2 frontend and LakeSnes core as the PC/Android ports as a `.nro`
+under Atmosphère (hbmenu). Like the other ports it needs **your own USA ROM** — nothing
+game-related is built into the `.nro`.
+
+## Build
+
+1. Install devkitPro and the Switch packages: `(dkp-)pacman -S switch-dev switch-sdl2`
+   (`DEVKITPRO` must be set, e.g. `/opt/devkitpro`).
+2. From the repo root: `make -f Makefile.switch`  ->  `BusterBustsLoose.nro`
+   (`make -f Makefile.switch NXLINK=1` also sends stdout/stderr to `nxlink -s`).
+
+## Install and run
+
+Copy to the SD card:
+
+    sd:/switch/BusterBustsLoose/BusterBustsLoose.nro
+    sd:/switch/BusterBustsLoose/<your USA ROM>.sfc        (.smc/.swc/.fig also found)
+
+Start it from hbmenu (**title takeover** / full RAM preferred; the Album applet launch works
+but has less memory). Settings (`bbl.ini`), `saves/` and screenshots are written next to the
+`.nro`. If no ROM is found, an on-screen message says where to put it.
+
+Quick test from a PC: `nxlink -s BusterBustsLoose.nro` (build with `NXLINK=1` to see the log).
+
+## Controls (defaults)
+
+Positional like the PC defaults: bottom face button = SNES B, right = SNES A, left = Y,
+top = X; L/R as is; + = Start; **- opens the menu** (it is the SNES Select, which the game
+only uses as a second Start); ZR = fast forward; left stick also drives the D-pad.
+Bindings can be changed in the menu's Gamepad page.
+
+## What differs from the PC/Android build
+
+- Always full screen (handheld 720p / docked 1080p); the display-mode, monitor and window-size
+  menu entries are hidden (`BBL_FIXED_SCREEN`, shared with Android).
+- Default scaling is *Sharp bilinear*, with its CPU pre-scale capped at 2x.
+- No file dialog: the ROM is searched for in the `.nro`'s folder (and `sdmc:/switch/BusterBustsLoose/`).
+- Window + renderer are created before the ROM search so errors can be drawn on screen.
+- Controller mapping for the Switch joystick driver is registered explicitly (`src/switch_platform.c`).
+- The background "stage select" worker thread gets an explicit 1 MiB stack.
+
+## First-boot checklist (not yet verified on hardware)
+
+1. Builds and links against the portlib (check `sdl2-config --libs` output if the link fails).
+2. Launches from hbmenu; ROM found; title screen shows with sound.
+3. Buttons: bottom = jump (SNES B), left = Y, + = Start, - = menu, ZR = fast forward.
+   If A/B or the stick Y axis feel swapped/inverted, adjust the mapping string in `switch_setupPads()`.
+4. Docked vs handheld: the picture should refit when the console is docked/undocked.
+5. Frame rate: watch *Show FPS* (menu -> Video) in a busy widescreen scene. If it is below 60,
+   try Widescreen *Off*, Sprite limit *Original*, Scaling *Smooth*, then consider a CPU boost.
+6. Home button / sleep: the game should pause on focus loss and resume cleanly.
+7. Saves: quick save/load and a save slot survive an exit and restart.
