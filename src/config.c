@@ -76,6 +76,9 @@ void config_defaults(Settings* s) {
   s->vsync = 1;
   s->spriteLimit = 1;
   s->showFps = 0;
+  s->showPerf = 0;
+  s->ppuThreads = 0;
+  s->mtVerify = 0;
   s->colourMode = 0;
   s->brightness = 100;
   s->contrast = 100;
@@ -94,6 +97,8 @@ void config_defaults(Settings* s) {
 #ifdef __SWITCH__
   // (the 720p / 1080p screen is no whole multiple of the picture: sharp bilinear keeps pixels even)
   s->scaling = SCALE_SHARP_BILINEAR;
+  // (stock clocks: the picture is drawn on the two cores the emulation does not use)
+  s->ppuThreads = 2;
 #endif
   s->saveSlot = 1;
   s->levelDifficulty = 1;
@@ -124,6 +129,9 @@ static int buildTable(IniInt* t) {
   I("vsync", cfg.vsync);
   I("unlimited_sprites", cfg.spriteLimit);
   I("show_fps", cfg.showFps);
+  I("show_perf", cfg.showPerf);
+  I("render_threads", cfg.ppuThreads);
+  I("render_threads_verify", cfg.mtVerify);
   I("colour_mode", cfg.colourMode);
   I("brightness", cfg.brightness);
   I("contrast", cfg.contrast);
@@ -213,6 +221,9 @@ void config_validate(void) {
   clampInt(&cfg.vsync, 0, 1, d.vsync);
   clampInt(&cfg.spriteLimit, 0, 1, d.spriteLimit);
   clampInt(&cfg.showFps, 0, 1, d.showFps);
+  clampInt(&cfg.showPerf, 0, 1, d.showPerf);
+  clampInt(&cfg.ppuThreads, 0, 3, d.ppuThreads);
+  clampInt(&cfg.mtVerify, 0, 1, d.mtVerify);
   clampInt(&cfg.colourMode, 0, COLOUR_COUNT - 1, d.colourMode);
   clampInt(&cfg.brightness, 50, 150, d.brightness);
   clampInt(&cfg.contrast, 50, 150, d.contrast);

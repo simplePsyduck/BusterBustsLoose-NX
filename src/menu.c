@@ -16,6 +16,9 @@
 #include "levels.h"
 #include "music.h"
 #include "audio.h"
+#ifdef __SWITCH__
+#include "switch_platform.h"
+#endif
 
 typedef void (*PageFn)(void);
 
@@ -219,6 +222,18 @@ static void pageVideo(void) {
   toggle("CRT mask", &cfg.crtMask, "Aperture grille pattern (looks best at 1440p and above)");
   if(choice("Sprite limit", &cfg.spriteLimit, limitNames, 2, "Unlimited removes sprite flicker and dropout, useful in widescreen")) app_applyGameSettings();
   toggle("Show FPS", &cfg.showFps, "Show the frame rate in the corner");
+  toggle("Show performance", &cfg.showPerf, "Milliseconds per frame spent emulating and drawing (a 60 FPS frame has 16.7 ms)");
+  {
+    static const char* const threadNames[] = { "Off", "1 thread", "2 threads", "3 threads" };
+    header("Performance");
+#ifdef __SWITCH__
+    const int maxT = 2;
+#else
+    const int maxT = 3;
+#endif
+    if(choice("Render threads", &cfg.ppuThreads, threadNames, maxT + 1, "Draws the picture on other CPU cores while the emulation goes on; the picture stays identical")) app_applyThreads();
+    if(cfg.showPerf && toggle("Verify threads (slow)", &cfg.mtVerify, "Debug: draws every frame twice and compares; the overlay then shows any differences")) app_applyThreads();
+  }
 }
 
 static void pageColours(void) {

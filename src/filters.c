@@ -69,5 +69,6 @@ bool filters_build(int mode, int brightness, int contrast, int saturation, int g
 }
 
 void filters_apply(Ppu* ppu, int mode, int brightness, int contrast, int saturation, int gamma) {
+  ppu_mtSync(ppu);   // (render threads may still be reading the table that is about to change)
   ppu->colorLut = filters_build(mode, brightness, contrast, saturation, gamma) ? lut : NULL;
 }

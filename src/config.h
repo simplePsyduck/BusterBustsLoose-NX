@@ -35,6 +35,9 @@ typedef struct Settings {
   int vsync;
   int spriteLimit;    // 0 original, 1 unlimited
   int showFps;
+  int showPerf;       // emulation / drawing time per frame
+  int ppuThreads;     // render threads for the picture (0 = draw on the emulation thread)
+  int mtVerify;       // debug: also draw synchronously and compare every frame
   // colour
   int colourMode;
   int brightness;     // percent

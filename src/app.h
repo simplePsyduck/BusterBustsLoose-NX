@@ -11,6 +11,7 @@
 Bbl* app_game(void);
 void app_applyVideo(void);         // window mode, size, vsync
 void app_applyGameSettings(void);  // widescreen, colours, sprite limit, cheats
+void app_applyThreads(void);       // render threads (cfg.ppuThreads)
 void app_toast(const char* fmt, ...);
 void app_resetGame(void);
 bool app_saveState(int slot);

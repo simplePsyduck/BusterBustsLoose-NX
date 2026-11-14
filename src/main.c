@@ -31,6 +31,7 @@
 #include "music.h"
 #include "levels.h"
 #include "touch.h"
+#include "mtplat.h"
 #ifdef __ANDROID__
 #include <unistd.h>
 #include <jni.h>
@@ -95,8 +96,20 @@ static struct {
   // timing
   uint64_t lastCounter;
   double frameAcc;
+  double workEmuMs, workDrawMs;
+  bool fastForwarding;
+  double workEma;        // smoothed ms of emulation + drawing per loop (before the wait for the refresh)
+  int catchCooldown;     // loops during which a missed refresh is not made up for again
+  int lateLoops;         // loops that missed a refresh (counted per second for the overlay)
+  int lateShown;
   double fps, loopsPerSec;
   int fpsFrames, fpsLoops;
+  // performance overlay: time spent per emulated / presented frame, in ms (see cfg.showPerf)
+  uint64_t perfEmuTicks, perfDrawTicks, perfPresentTicks;
+  int perfPresents;
+  double perfEmu, perfDraw, perfPresent;
+  PpuMtStats mtStats;
+  int audFill, audMin, audMax, audUnder, audOver;
   uint32_t fpsTicks;
   int16_t audioBuf[4096 * 2];
 } app;
@@ -243,6 +256,21 @@ void app_applyGameSettings(void) {
   filters_apply(app.game->snes->ppu, cfg.colourMode, cfg.brightness, cfg.contrast, cfg.saturation, cfg.gamma);
   for(int i = 0; i < CHEAT_COUNT; i++) cheats_set(app.game, i, cfg.cheats[i]);
   if(oldExtra != app.game->extraCols && cfg.widescreen != WS_AUTO) resizeWindowToScale();
+}
+
+void app_applyThreads(void) {
+  if(!app.game) return;
+  Ppu* ppu = app.game->snes->ppu;
+  int want = cfg.ppuThreads;
+  if(want > mtplat_maxWorkers()) want = mtplat_maxWorkers();
+  if(want != ppu_mtWorkers(ppu)) {
+    mtplat_init();
+    if(!ppu_mtStart(ppu, want)) {
+      app_toast("Render threads unavailable");
+      cfg.ppuThreads = 0;
+    }
+  }
+  ppu_mtSetVerify(ppu, cfg.mtVerify != 0);
 }
 
 void app_quit(void) { app.running = false; }
@@ -576,6 +604,33 @@ static void renderFrame(void) {
     ui_frame(W - tw - 8 * s, 8 * s, tw, 14 * s, (UiColor){ 14, 26, 48, 232 }, (UiColor){ 76, 134, 200, 255 }, s > 1 ? s * 3 / 4 : 1);
     ui_text(W - tw, 11 * s + s / 2, app.toast, UI_WHITE, s);
   }
+  if(cfg.showPerf) {
+    // emu: emulating one game frame, draw: preparing the picture, present: handing it over
+    // (includes the wait for the display's refresh, so a large value there means headroom)
+    char buf[96];
+    snprintf(buf, sizeof(buf), "emu %.1f  draw %.1f  present %.1f ms  late %d", app.perfEmu, app.perfDraw, app.perfPresent, app.lateShown);
+    int fs = s < 2 ? 2 : s;
+    ui_textShadow(W - ui_textWidth(buf, fs) - 8 * fs, H - (cfg.showFps ? 28 : 16) * fs, buf, UI_WHITE, fs);
+    {
+      // audio: queued ms now / lowest / highest in the last second; underruns = the device ran dry (a gap), over = dropped
+      char ab[96];
+      snprintf(ab, sizeof(ab), "audio %d ms (%d-%d)  dry %d  over %d", app.audFill * 1000 / AUDIO_RATE, app.audMin * 1000 / AUDIO_RATE, app.audMax * 1000 / AUDIO_RATE, app.audUnder, app.audOver);
+      ui_textShadow(W - ui_textWidth(ab, fs) - 8 * fs, H - 52 * fs, ab, app.audUnder ? UI_RED : UI_WHITE, fs);
+    }
+    if(app.mtStats.workers > 0) {
+      // threads: busy time of each render thread per frame, and how long the emulation thread waited for them
+      char mb[128];
+      int o = snprintf(mb, sizeof(mb), "ppu");
+      for(int i = 0; i < app.mtStats.workers; i++) o += snprintf(mb + o, sizeof(mb) - o, " %.1f", app.mtStats.workerBusyMs[i]);
+      o += snprintf(mb + o, sizeof(mb) - o, "  main idle %.1f + drew %.1f ms", app.mtStats.mainWaitMs, app.mtStats.mainHelpMs);
+      if(cfg.mtVerify) snprintf(mb + o, sizeof(mb) - o, "  verify %d/%d bad", app.mtStats.verifyBadFrames, app.mtStats.verifyFrames);
+      ui_textShadow(W - ui_textWidth(mb, fs) - 8 * fs, H - 40 * fs, mb, UI_WHITE, fs);
+    }
+    if(!cfg.showFps) {
+      snprintf(buf, sizeof(buf), "%.1f FPS", app.fps);
+      ui_textShadow(W - ui_textWidth(buf, fs) - 8 * fs, H - 28 * fs, buf, UI_GREEN, fs);
+    }
+  }
   if(cfg.showFps) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%.1f FPS", app.fps);
@@ -586,7 +641,11 @@ static void renderFrame(void) {
 }
 
 static void render(void) {
+  uint64_t perfA = SDL_GetPerformanceCounter();
   renderFrame();
+  uint64_t perfB = SDL_GetPerformanceCounter();
+  app.perfDrawTicks += perfB - perfA;
+  app.workDrawMs = (perfB - perfA) * 1000.0 / SDL_GetPerformanceFrequency();
   if(recVidF) {
     // (read back before presenting: flip-model swap chains discard the back buffer)
     int W, H;
@@ -600,7 +659,10 @@ static void render(void) {
       fwrite(px, 3, (size_t)W * H, recVidF);
     }
   }
+  uint64_t perfC = SDL_GetPerformanceCounter();
   SDL_RenderPresent(app.ren);
+  app.perfPresentTicks += SDL_GetPerformanceCounter() - perfC;
+  app.perfPresents++;
 }
 
 static void screenshot(void) {
@@ -638,7 +700,10 @@ static void stepGame(bool withAudio) {
   uint16_t mask = override >= 0 ? (uint16_t)override : (in_snesMask() | scriptHeld);
   bbl_setButtons(g, 1, mask);
   cheats_preFrame(g);
+  // a frame that is followed by another one in the same loop is never shown: skip drawing its pixels
+  g->snes->ppu->skipRender = !withAudio;
   bbl_runFrame(g);
+  g->snes->ppu->skipRender = false;
   cheats_postFrame(g);
   int n = recPcmF ? recSamples() : audio_samplesForFrame();
   bbl_getSamples(g, app.audioBuf, n);
@@ -646,7 +711,10 @@ static void stepGame(bool withAudio) {
     if(levelSelectHidden()) memset(app.audioBuf, 0, (size_t)n * 4);
     fwrite(app.audioBuf, 4, n, recPcmF);
   }
-  if(withAudio) {
+  // (every frame's audio is queued, also those of frames made up in the same loop: dropping them
+  // cut a frame out of the music each time)
+  // (fast forward still queues only the last frame of a batch: its audio is only there to be dropped)
+  if(withAudio || !app.fastForwarding) {
     if(levelSelectHidden()) audio_pushSilence(n);
     else audio_push(app.audioBuf, n);
   }
@@ -1255,6 +1323,7 @@ int main(int argc, char** argv) {
   if(!audio_init()) app_toast("No audio device");
   app_applyVideo();
   app_applyGameSettings();
+  app_applyThreads();
   SDL_ShowWindow(app.win);
 
   app.running = true;
@@ -1314,23 +1383,39 @@ int main(int argc, char** argv) {
     int frames = 0;
     bool locked = false;   // one frame per refresh of a 60 Hz display
     while(app.frameAcc >= frameTime) { app.frameAcc -= frameTime; frames++; }
-    // with vsync on a ~60 Hz display, lock to one frame per refresh; the audio
-    // resampler absorbs the tiny speed difference
+    // With vsync on a ~60 Hz display, lock to one emulated frame per refresh (the audio resampler
+    // absorbs the 0.16% speed difference). The time accumulator above is only for other displays:
+    // against a blocking present it beats against the refresh and gives 0, 1, 2 frames in turn.
     if(cfg.vsync) {
       // the refresh rate the window is shown at: the display's current mode (a
       // window's own display mode is only what exclusive fullscreen would use,
       // and a 144 Hz monitor locked to one frame per refresh ran at ~47 FPS)
-      SDL_DisplayMode dm;
       int refresh = 0;
+#ifdef __SWITCH__
+      refresh = 60;   // (the console's display is 60 Hz whatever the video driver reports)
+#else
+      SDL_DisplayMode dm;
       bool exclusive = (SDL_GetWindowFlags(app.win) & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN;
       int display = SDL_GetWindowDisplayIndex(app.win);
       if(exclusive ? SDL_GetWindowDisplayMode(app.win, &dm) == 0 : (display >= 0 && SDL_GetCurrentDisplayMode(display, &dm) == 0))
         refresh = dm.refresh_rate;
+#endif
       if(refresh >= 59 && refresh <= 61) {
-        // one frame per refresh; vsync timing jitters around 16.7 ms, so a
-        // time budget would skip a frame after a short wait and drop the one a
-        // long wait owes. Catch up only after a refresh was really missed.
-        frames = dt > frameTime * 1.5 ? (int)(dt / frameTime + 0.5) : 1;
+        // one frame per refresh. After a missed refresh the game is owed time, but making it up
+        // means emulating two frames in one loop, which takes twice as long and misses the next
+        // refresh too: fast, slow, fast, slow. So it is only made up for after a one-off hitch (a
+        // sustained load that fits in the budget), at most one extra frame, and then not again
+        // for a second. If a frame really takes longer than a refresh the game slows down evenly.
+        frames = 1;
+        if(dt > frameTime * 1.5) {
+          app.lateLoops++;
+          int owed = (int)(dt / frameTime + 0.5) - 1;
+          if(owed > 0 && app.catchCooldown <= 0 && app.workEma < frameTime * 1000.0 * 0.6) {
+            frames = 2;
+            app.catchCooldown = 60;
+          }
+        }
+        if(app.catchCooldown > 0) app.catchCooldown--;
         app.frameAcc = 0;
         locked = true;
       }
@@ -1343,7 +1428,12 @@ int main(int argc, char** argv) {
       bool ff = cfg.fastForward && in_actionHeld(ACT_FAST_FORWARD) && !recVidF;
       if(levelSelectHidden()) { ff = false; frames = 12; }
       if(ff) frames = frames > 0 ? 6 : 0;
+      app.fastForwarding = ff || levelSelectHidden();
+      uint64_t perfT = SDL_GetPerformanceCounter();
       for(int i = 0; i < frames; i++) stepGame(i == frames - 1);
+      uint64_t emuTicks = SDL_GetPerformanceCounter() - perfT;
+      app.perfEmuTicks += emuTicks;
+      app.workEmuMs = emuTicks * 1000.0 / SDL_GetPerformanceFrequency() / (frames > 0 ? frames : 1);
       app.fpsFrames += frames;
     } else {
       scriptTicks++;
@@ -1363,8 +1453,18 @@ int main(int argc, char** argv) {
     uint32_t t = SDL_GetTicks();
     app.fpsLoops++;
     if(t - app.fpsTicks >= 1000) {
+      double ms = 1000.0 / SDL_GetPerformanceFrequency();
+      app.perfEmu = app.fpsFrames > 0 ? app.perfEmuTicks * ms / app.fpsFrames : 0;
+      app.perfDraw = app.perfPresents > 0 ? app.perfDrawTicks * ms / app.perfPresents : 0;
+      app.perfPresent = app.perfPresents > 0 ? app.perfPresentTicks * ms / app.perfPresents : 0;
+      ppu_mtGetStats(app.game->snes->ppu, &app.mtStats, true);
+      audio_stats(&app.audFill, &app.audMin, &app.audMax, &app.audUnder, &app.audOver);
+      app.perfEmuTicks = app.perfDrawTicks = app.perfPresentTicks = 0;
+      app.perfPresents = 0;
       app.fps = app.fpsFrames * 1000.0 / (t - app.fpsTicks);
       app.loopsPerSec = app.fpsLoops * 1000.0 / (t - app.fpsTicks);
+      app.lateShown = app.lateLoops;
+      app.lateLoops = 0;
       app.fpsFrames = 0;
       app.fpsLoops = 0;
       app.fpsTicks = t;
@@ -1380,7 +1480,17 @@ int main(int argc, char** argv) {
       render();
     }
     scriptStep();
-    if(!present || !cfg.vsync) SDL_Delay(1);
+    if(present && !paused) {
+      // cost of one game frame (emulation + drawing); rises at once, falls slowly
+      double w = app.workEmuMs + app.workDrawMs;
+      app.workEma = w > app.workEma ? w : app.workEma * 0.95 + w * 0.05;
+    }
+    if(!locked) {
+      // no refresh to wait for: sleep up to the next frame, the last stretch by yielding
+      double ahead = frameTime - app.frameAcc;
+      if(ahead > 0.0025) SDL_Delay((Uint32)((ahead - 0.0015) * 1000.0));
+      else SDL_Delay(0);
+    }
   }
 
   app_saveConfig();

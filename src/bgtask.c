@@ -11,6 +11,9 @@
 #include <SDL.h>
 #include "bgtask.h"
 #include "bbl.h"
+#ifdef __SWITCH__
+#include <switch.h>
+#endif
 
 static SDL_Thread* thread;
 static SDL_atomic_t status; // 0 running, 1 ready, 2 failed
@@ -25,9 +28,15 @@ static bool atStageSelect(Bbl* g) {
 
 static int worker(void* arg) {
   (void)arg;
+#ifdef __SWITCH__
+  // lowest priority: this is a whole second emulation, and it must never take a core from the game
+  // (the emulation thread and the render threads are pinned, this one floats)
+  svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3B);
+#endif
   char err[512];
   Bbl* g = bbl_create(romPath, err, sizeof(err));
   if(!g) { SDL_AtomicSet(&status, 2); return 0; }
+  g->snes->ppu->skipRender = true;   // (nothing of this copy is ever shown)
   bool ok = false;
   // tap Start through the intro and title until the stage select mode starts;
   // stop pressing the moment it does, otherwise the press would also confirm
@@ -37,6 +46,7 @@ static int worker(void* arg) {
     bool selectMode = bbl_peek16(g, 0x7E0030) == 3 && bbl_peek16(g, 0x7E0032) == 7;
     bbl_setButtons(g, 1, (!selectMode && (f % 20) < 10) ? (1 << BTN_START) : 0);
     bbl_runFrame(g);
+    SDL_Delay(2);   // (a pause every frame: the preparation takes a little longer, the game is not disturbed)
     if(atStageSelect(g)) {
       bbl_setButtons(g, 1, 0);
       for(int k = 0; k < 30; k++) bbl_runFrame(g);

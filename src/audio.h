@@ -13,6 +13,8 @@ int audio_samplesForFrame(void);
 void audio_push(const int16_t* samples, int count);
 void audio_pushSilence(int count);
 int audio_queued(void);
+// since the last call: current / lowest / highest queued frames, times the device ran dry, frames dropped (full)
+void audio_stats(int* fillFrames, int* minFill, int* maxFill, int* underruns, int* overruns);
 void audio_clear(void);
 void audio_setPaused(bool paused);
 // peak levels of the last pushed block (0..1), for meters

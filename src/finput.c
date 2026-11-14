@@ -112,7 +112,8 @@ void in_handleEvent(const SDL_Event* e) {
         case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_SPACE:
         case SDL_SCANCODE_Z: if(!e->key.repeat) navPush(NAV_OK); break;
         case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_BACKSPACE: case SDL_SCANCODE_X:
-          if(!e->key.repeat) navPush(NAV_BACK); break;
+          if(!e->key.repeat) navPush(NAV_BACK);
+          break;
         case SDL_SCANCODE_PAGEUP: navPush(NAV_PAGE_UP); break;
         case SDL_SCANCODE_PAGEDOWN: navPush(NAV_PAGE_DOWN); break;
         case SDL_SCANCODE_DELETE: if(!e->key.repeat) navPush(NAV_EXTRA); break;

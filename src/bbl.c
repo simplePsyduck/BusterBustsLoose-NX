@@ -1011,7 +1011,7 @@ static void ringDrawCell(Bbl* g, int layer, int cx, int cy) {
   if(layer == 0) bbl_poke(g, 0x7F7000 + idx, coll);
   if(k == 1 && !trainVoid(g, ringLayers[layer])) return;
   if(k == 1) tile = 0;   // (a void screen: empty, see trainVoid)
-  g->snes->ppu->vram[(bbl_peek16(g, ringLayers[layer] + 0x30) + idx) & 0x7fff] = tile;
+  ppu_vramStore(g->snes->ppu, (uint16_t)(bbl_peek16(g, ringLayers[layer] + 0x30) + idx), tile);
   g->ringOwner[layer][idx] = ringKey(cx, cy);
   g->ringKept[layer][idx] = 0;
 }
@@ -1058,8 +1058,8 @@ int bbl_viewFix(Bbl* g, int layer) {
     for(int cy = camY >> 3; cy <= (camY + lines - 1) >> 3; cy++) {
       int idx; uint16_t tile; uint8_t coll;
       if(ringCell(g, layer, cx, cy, &idx, &tile, &coll) != 2) continue;
-      uint16_t* v = &ppu->vram[(bbl_peek16(g, s + 0x30) + idx) & 0x7fff];
-      if(*v != tile) { *v = tile; n++; }
+      uint16_t vadr = (uint16_t)((bbl_peek16(g, s + 0x30) + idx) & 0x7fff);
+      if(ppu->vram[vadr] != tile) { ppu_vramStore(ppu, vadr, tile); n++; }
     }
   }
   return n;
@@ -1173,7 +1173,7 @@ static bool collapseCarCell(Bbl* g, int cx, int cy, int ri) {
   if(ringCell(g, 0, cx - 32, cy, &idx, &vtile, &vcoll) != 2 || !(vtile & 0x3FF)) return false;
   uint32_t key = ringKey(cx - 32, cy);
   if(g->ringOwner[0][ri] == key) return true;
-  g->snes->ppu->vram[(bbl_peek16(g, ringLayers[0] + 0x30) + ri) & 0x7fff] = vtile;
+  ppu_vramStore(g->snes->ppu, (uint16_t)(bbl_peek16(g, ringLayers[0] + 0x30) + ri), vtile);
   bbl_poke(g, 0x7F7000 + ri, vcoll);
   g->ringOwner[0][ri] = key;
   g->ringKept[0][ri] = 0;
@@ -1217,7 +1217,7 @@ static bool collapseCarRear(Bbl* g, int cx, int cy, int ri, bool nextCar) {
     }
     if(j < 24 || !any) continue;
     if(ringCell(g, 0, base + 31 - k, cy, &idx, &t, &c) != 2) continue;
-    vram[(bbl_peek16(g, ringLayers[0] + 0x30) + ri) & 0x7fff] = w;
+    ppu_vramStore(ppu, (uint16_t)(bbl_peek16(g, ringLayers[0] + 0x30) + ri), w);
     bbl_poke(g, 0x7F7000 + ri, c);
     g->ringOwner[0][ri] = key;
     g->ringKept[0][ri] = 0;
@@ -2735,12 +2735,14 @@ void bbl_runFrame(Bbl* g) {
   // CPU time; a little more speed keeps busy scenes from slowing down more
   // than they do in 4:3
   g->snes->cpuCycleScale = (active && g->cpuBoost > 0) ? (uint16_t)(25600 / (100 + g->cpuBoost)) : 256;
+  // (threaded rendering: the workers clear the unused side columns themselves, line by line)
+  ppu->mtBorderClear = (!active && g->extraCols > 0) ? g->extraCols : 0;
   updateView(g, active);
   hud_update(g);
   snes_runFrame(g->snes);
   g->ringLinesStale = false;
   vramLogFlush(g);
-  if(!active && g->extraCols > 0) {
+  if(!active && g->extraCols > 0 && (!ppu->mt || ppu_mtVerifying(ppu))) {
     for(int y = 0; y < PPU_BUF_H; y++) {
       uint32_t* line = &ppu->pixelBuffer[y * PPU_BUF_W];
       memset(line + PPU_MAX_EXTRA - g->extraCols, 0, g->extraCols * 4);
@@ -2751,7 +2753,7 @@ void bbl_runFrame(Bbl* g) {
 }
 
 const uint32_t* bbl_pixels(Bbl* g) {
-  return g->snes->ppu->pixelBuffer;
+  return ppu_pixels(g->snes->ppu);   // (with threaded rendering this waits for the last lines)
 }
 
 int bbl_width(Bbl* g) { return 256 + 2 * g->extraCols; }

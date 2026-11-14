@@ -150,6 +150,7 @@ static void pumpCommands(void) {
 
 void music_frame(int16_t* out, int samples) {
   if(!m) { memset(out, 0, samples * 4); return; }
+  m->snes->ppu->skipRender = true;   // (only its sound is used)
   if(state == MUSIC_LOADING) {
     // uploads run in the idle loop; run a few frames at once to keep it short
     for(int i = 0; i < 8 && bbl_peek16(m, 0x7E1E2C) != 0; i++) {

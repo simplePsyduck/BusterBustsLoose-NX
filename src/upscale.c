@@ -101,6 +101,13 @@ static uint32_t* padC;
 static int* padY;
 static int padCap;
 
+// Pre-allocated buffers to avoid repeated malloc/free per frame
+#define MAX_PAD_W 512
+#define MAX_PAD_H 256
+static uint32_t padC_static[MAX_PAD_W * MAX_PAD_H];
+static int padY_static[MAX_PAD_W * MAX_PAD_H];
+static int padC_init = 0;
+
 static inline int yuvOf(uint32_t c) {
   int r = (c >> 16) & 0xff, g = (c >> 8) & 0xff, b = c & 0xff;
   int y = (299 * r + 587 * g + 114 * b) / 1000;
@@ -169,13 +176,28 @@ static void setupRotations(int pitch) {
 
 static void preparePadded(const uint32_t* src, int w, int h, int pitch) {
   int pw = w + 4, ph = h + 4;
-  if(pw * ph > padCap) {
-    free(padC);
-    free(padY);
-    padC = malloc(sizeof(uint32_t) * pw * ph);
-    padY = malloc(sizeof(int) * pw * ph);
+  
+  // Use pre-allocated static buffers if they're large enough
+  if(!padC_init || padCap < pw * ph) {
+    if(pw > MAX_PAD_W || ph > MAX_PAD_H) {
+      // Fallback to dynamic allocation for unusually large screens
+      if(padC) free(padC);
+      if(padY) free(padY);
+      padC = malloc(sizeof(uint32_t) * pw * ph);
+      padY = malloc(sizeof(int) * pw * ph);
+    } else {
+      // Use static buffers
+      padC = padC_static;
+      padY = padY_static;
+    }
     padCap = pw * ph;
+    padC_init = 1;
+  } else if(pw <= MAX_PAD_W && ph <= MAX_PAD_H) {
+    // Reuse static buffers
+    padC = padC_static;
+    padY = padY_static;
   }
+  
   for(int y = 0; y < ph; y++) {
     int sy = y - 2;
     sy = sy < 0 ? 0 : (sy >= h ? h - 1 : sy);
