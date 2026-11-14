@@ -24,8 +24,8 @@ SOURCES     := src src/snes
 INCLUDES    := src src/snes third_party/stb
 
 APP_TITLE   := Buster Busts Loose!
-APP_AUTHOR  := darhkfox
-APP_VERSION := 1.0-switch-poc
+APP_AUTHOR  := Darhkfox & simplePsyduck
+APP_VERSION := 1.0
 ICON        := switch/icon.jpg
 
 SWITCH_PORTLIBS := $(DEVKITPRO)/portlibs/switch
@@ -38,12 +38,16 @@ DEFINES     += -DBBL_NXLINK
 endif
 
 # the emulation core needs optimising; -O2 matches the Android build
-CFLAGS      := -g -Wall -O2 -ffunction-sections -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
+CFLAGS      := -g -Wall -O3 -ffast-math -fomit-frame-pointer -ffunction-sections -fdata-sections \
+               -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function -flto \
                $(ARCH) $(DEFINES)
+# ARM NEON and Cortex-A57 specific optimizations
+CFLAGS      += -ftree-vectorize -funroll-loops
+# Link-time optimization for better cross-module inlining
+LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -flto -Wl,--gc-sections
 CFLAGS      += $(INCLUDE) $(shell $(SWITCH_PORTLIBS)/bin/sdl2-config --cflags)
 CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS     := -g $(ARCH)
-LDFLAGS      = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 # sdl2-config lists SDL2 and what it needs (EGL, GLESv2, glapi, drm_nouveau)
 LIBS        := $(shell $(SWITCH_PORTLIBS)/bin/sdl2-config --libs) -lnx -lm
