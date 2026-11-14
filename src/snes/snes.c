@@ -22,8 +22,7 @@ static void snes_doAutoJoypad(Snes* snes);
 static uint8_t snes_readReg(Snes* snes, uint16_t adr);
 static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
 static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set open bus
-static int snes_getAccessTime(Snes* snes, uint32_t adr);
-static void build_accesstime(Snes* snes, bool recalc);
+static inline int snes_getAccessTime(Snes* snes, uint32_t adr);
 
 
 void (*snes_dbgRead)(Snes* snes, uint32_t adr, uint8_t val) = NULL;
@@ -91,7 +90,6 @@ void snes_reset(Snes* snes, bool hard) {
   snes->fastMem = false;
   snes->openBus = 0;
   snes->nextHoriEvent = 16;
-  build_accesstime(snes, false);
 }
 
 void snes_handleState(Snes* snes, StateHandler* sh) {
@@ -117,7 +115,6 @@ void snes_handleState(Snes* snes, StateHandler* sh) {
   input_handleState(snes->input1, sh);
   input_handleState(snes->input2, sh);
   cart_handleState(snes->cart, sh);
-  if(!sh->saving) build_accesstime(snes, true);
 }
 
 void snes_runFrame(Snes* snes) {
@@ -135,8 +132,28 @@ void snes_runCycles(Snes* snes, int cycles) {
     // if we go past 536, add 40 cycles for dram refersh
     cycles += 40;
   }
-  for(int i = 0; i < cycles; i += 2) {
-    snes_runCycle(snes);
+  // one step is 2 master cycles. While no h/v irq can fire, nothing happens between
+  // two horizontal events except the counters moving on, so those steps are done in one go;
+  // the step that reaches an event (or any step while an irq is possible) goes through snes_runCycle
+  int steps = (cycles + 1) >> 1;
+  while(steps > 0) {
+    if(snes->vIrqEnabled || snes->hIrqEnabled || snes->hvTimer != 0 || snes->irqCondition) {
+      snes_runCycle(snes);
+      steps--;
+      continue;
+    }
+    int toEvent = (int)(snes->nextHoriEvent - snes->hPos) >> 1; // the step that fires the event
+    int bulk = steps < toEvent ? steps : toEvent - 1;
+    if(bulk > 0) {
+      snes->cycles += 2 * (uint64_t)bulk;
+      snes->hPos += 2 * bulk;
+      if(snes->autoJoyTimer > 0) snes->autoJoyTimer = snes->autoJoyTimer > 2 * bulk ? snes->autoJoyTimer - 2 * bulk : 0;
+      steps -= bulk;
+    }
+    if(steps > 0) {
+      snes_runCycle(snes);
+      steps--;
+    }
   }
 }
 
@@ -463,7 +480,6 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
     case 0x420d: {
       if (snes->fastMem != (val & 0x1)) {
         snes->fastMem = val & 0x1;
-        build_accesstime(snes, true);
       }
       break;
     }
@@ -532,7 +548,9 @@ void snes_write(Snes* snes, uint32_t adr, uint8_t val) {
   cart_write(snes->cart, bank, adr, val);
 }
 
-static int snes_getAccessTime(Snes* snes, uint32_t adr) {
+// master cycles of a CPU access to adr (computed: a 16 MB lookup table cost memory, start-up time
+// and cache misses for nothing)
+static inline int snes_getAccessTime(Snes* snes, uint32_t adr) {
   uint8_t bank = adr >> 16;
   adr &= 0xffff;
   if((bank < 0x40 || (bank >= 0x80 && bank < 0xc0)) && adr < 0x8000) {
@@ -545,18 +563,6 @@ static int snes_getAccessTime(Snes* snes, uint32_t adr) {
   return (snes->fastMem && bank >= 0x80) ? 6 : 8; // depends on setting in banks 80+
 }
 
-static void build_accesstime(Snes* snes, bool recalc) {
-  int start = (recalc) ? 0x800000 : 0; // recalc only updates "fastMem" area
-  if (snes->accessTime == NULL) {
-    snes->accessTime = (uint8_t *)malloc(0x1000000);
-    start = 0;
-  }
-  for (int i = start; i < 0x1000000; i++) {
-    snes->accessTime[i] = snes_getAccessTime(snes, i);
-  }
-}
-
-
 uint8_t snes_read(Snes* snes, uint32_t adr) {
   uint8_t val = snes_rread(snes, adr);
   snes->openBus = val;
@@ -564,6 +570,11 @@ uint8_t snes_read(Snes* snes, uint32_t adr) {
 }
 
 // the master cycles a CPU access of `cycles` takes at the current CPU speed
+static inline void snes_dmaStep(Snes* snes, int cycles) {
+  Dma* dma = snes->dma;
+  if(dma->hdmaInitRequested || dma->hdmaRunRequested || dma->dmaState) dma_handleDma(dma, cycles);
+}
+
 static inline int snes_cpuCycles(Snes* snes, int cycles) {
   if(snes->cpuCycleScale == 256 || snes->cpuCycleScale == 0) return cycles;
   uint32_t t = snes->cpuCycleAcc + (uint32_t)cycles * snes->cpuCycleScale;
@@ -574,15 +585,39 @@ static inline int snes_cpuCycles(Snes* snes, int cycles) {
 void snes_cpuIdle(void* mem, bool waiting) {
   Snes* snes = (Snes*) mem;
   const int cycles = snes_cpuCycles(snes, 6);
-  dma_handleDma(snes->dma, cycles);
+  snes_dmaStep(snes, cycles);
   snes_runCycles(snes, cycles);
 }
 
 uint8_t snes_cpuRead(void* mem, uint32_t adr) {
   Snes* snes = (Snes*) mem;
-  const int total = snes_cpuCycles(snes, snes->accessTime[adr]);
+  const int total = snes_cpuCycles(snes, snes_getAccessTime(snes, adr));
+  // Most reads are of work RAM and LoROM: nothing about the hardware's state at that moment can
+  // change what they return, so the access runs its cycles in one go and reads straight from the
+  // array (instead of two cycle runs and four calls down to the cart). Only for an even number of
+  // cycles: snes_runCycles works in steps of two, so splitting an odd count rounds up twice.
+  if(!(total & 1)) {
+    const uint8_t bank = adr >> 16;
+    const uint16_t lo = (uint16_t)adr;
+    const uint8_t* src = NULL;
+    if(bank == 0x7e || bank == 0x7f) {
+      src = &snes->ram[((bank & 1) << 16) | lo];
+    } else if(bank < 0x40 || (bank >= 0x80 && bank < 0xc0)) {
+      if(lo < 0x2000) src = &snes->ram[lo];
+      else if(lo >= 0x8000 && snes->cart->type == 1)
+        src = &snes->cart->rom[((((uint32_t)bank & 0x7f) << 15) | (lo & 0x7fff)) & (snes->cart->romSize - 1)];
+    }
+    if(src) {
+      snes_dmaStep(snes, total);
+      snes_runCycles(snes, total);
+      const uint8_t rv = *src;
+      snes->openBus = rv;
+      if(snes_dbgRead) snes_dbgRead(snes, adr, rv);
+      return rv;
+    }
+  }
   const int late = total < 4 ? total : 4;
-  dma_handleDma(snes->dma, total);
+  snes_dmaStep(snes, total);
   snes_runCycles(snes, total - late);
   uint8_t rv = snes_read(snes, adr);
   snes_runCycles(snes, late);
@@ -592,8 +627,8 @@ uint8_t snes_cpuRead(void* mem, uint32_t adr) {
 
 void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val) {
   Snes* snes = (Snes*) mem;
-  const int cycles = snes_cpuCycles(snes, snes->accessTime[adr]);
-  dma_handleDma(snes->dma, cycles);
+  const int cycles = snes_cpuCycles(snes, snes_getAccessTime(snes, adr));
+  snes_dmaStep(snes, cycles);
   snes_runCycles(snes, cycles);
   if(snes_dbgWrite) snes_dbgWrite(snes, adr, val);
   if(snes->wramWatchFn) {

@@ -43,20 +43,17 @@ typedef struct WindowLayer {
   uint8_t maskLogic;
 } WindowLayer;
 
+// Threaded rendering (ppu_mt.c): the scanline renderer can run on worker threads. The emulation thread
+// still does everything that depends on emulated time (registers, sprite evaluation, DMA, ...) and
+// hands each finished scanline's state to the workers as a LineSnap.
+typedef struct PpuMt PpuMt;
+
 struct Ppu {
   Snes* snes;
-  // vram access
+  PpuMt* mt;               // NULL: draw every line in ppu_runLine (the original behaviour)
+  // ---- big memories and per-line tables: workers keep their own copies (kept in step by ppu_mt.c)
   uint16_t vram[0x8000];
-  uint16_t vramPointer;
-  bool vramIncrementOnHigh;
-  uint16_t vramIncrement;
-  uint8_t vramRemapMode;
-  uint16_t vramReadBuffer;
-  // cgram access
   uint16_t cgram[0x100];
-  uint8_t cgramPointer;
-  bool cgramSecondWrite;
-  uint8_t cgramBuffer;
   // oam access
   uint16_t oam[0x100];
   uint8_t highOam[0x20];
@@ -64,10 +61,37 @@ struct Ppu {
   // fills its table with the extra columns' sprites too); not in save states
   uint16_t extOam[0x100];
   uint8_t extHighOam[0x20];
+  // pixel buffer (xrgb8888), PPU_BUF_W x PPU_BUF_H, line 0 = scanline 1
+  // (with threaded rendering the finished picture is ppu_pixels(), not this)
+  uint32_t pixelBuffer[PPU_BUF_W * PPU_BUF_H];
+  // optional BG column remapping (HUD re-anchoring in widescreen). When
+  // bgRemapLayer >= 0, lines with bgRemapLineActive[line-1] set sample that layer
+  // at source column bgRemapSrc[line-1][x + PPU_MAX_EXTRA] (-1 = transparent).
+  int16_t bgRemapSrc[PPU_BUF_H][PPU_BUF_W];
+  bool bgRemapLineActive[PPU_BUF_H];
+  bool bgRemapLineContent[PPU_BUF_H];   // ...and the overlay shows something there
+  bool bgRemapLineHud[PPU_BUF_H];       // ...and it is the HUD (re-anchored), not a fixed overlay
+  // per-scanline scroll values of the last rendered frame (for frontend analysis; main thread only)
+  uint16_t lineHScroll[PPU_BUF_H][4];
+  uint16_t lineVScroll[PPU_BUF_H][4];
+  uint8_t lineHWrites[PPU_BUF_H][4];
+  uint8_t lineMode[PPU_BUF_H];          // BG mode of each scanline
+  uint16_t lineBg3Map[PPU_BUF_H];       // BG3 tilemap address of each scanline
+  // sprite line buffers (index = x + PPU_MAX_EXTRA), filled by sprite evaluation, read by the renderer
+  uint8_t objPixelBuffer[PPU_BUF_W];
+  uint8_t objPriorityBuffer[PPU_BUF_W];
+
+  // ---- everything from here to ppuSnapLast is copied for every line that is handed to a worker
+  // (keep it free of pointers to things that change and of big arrays; add new small state in here)
+  uint16_t vramPointer;
+  bool vramIncrementOnHigh;
+  uint16_t vramIncrement;
+  uint8_t vramRemapMode;
+  uint16_t vramReadBuffer;
+  uint8_t cgramPointer;
+  bool cgramSecondWrite;
+  uint8_t cgramBuffer;
   int extOamCount;
-  // called for every word the game writes into VRAM through the data port
-  void (*vramWriteHook)(void* ctx, uint16_t wordAdr);
-  void* vramWriteCtx;
   // offset-per-tile (mode 2) values for the widescreen columns the game's
   // table doesn't reach (column <= 0 or > 32), vertical offsets only
   bool optExtValid;
@@ -85,8 +109,6 @@ struct Ppu {
   uint16_t objTileAdr1;
   uint16_t objTileAdr2;
   uint8_t objSize;
-  uint8_t objPixelBuffer[PPU_BUF_W]; // line buffers (index = x + PPU_MAX_EXTRA)
-  uint8_t objPriorityBuffer[PPU_BUF_W];
   bool timeOver;
   bool rangeOver;
   bool objInterlace;
@@ -145,8 +167,6 @@ struct Ppu {
   bool countersLatched;
   uint8_t ppu1openBus;
   uint8_t ppu2openBus;
-  // pixel buffer (xrgb8888), PPU_BUF_W x PPU_BUF_H, line 0 = scanline 1
-  uint32_t pixelBuffer[PPU_BUF_W * PPU_BUF_H];
   // widescreen / enhancement settings (not part of save states)
   // per-pixel render caches (kept per instance so several PPUs can run on different threads)
   int r_layerCache[4];
@@ -160,9 +180,13 @@ struct Ppu {
   int extraLeft;
   int extraRight;
   bool noSpriteLimit;
-  // optional BG column remapping (HUD re-anchoring in widescreen). When
-  // bgRemapLayer >= 0, lines with bgRemapLineActive[line-1] set sample that layer
-  // at source column bgRemapSrc[line-1][x + PPU_MAX_EXTRA] (-1 = transparent).
+  // frame skipping: when set, ppu_runLine still evaluates sprites and records the per-line
+  // scroll data but draws no pixels (the picture of such a frame is never shown)
+  bool skipRender;
+  // threaded rendering only: columns on each side of the 256 pixel picture that are cleared
+  // to black on every line (what bbl_runFrame does after the frame when widescreen is
+  // configured but not in use), 0 = leave alone
+  int mtBorderClear;
   // playfield clip: outside [clipLeft, clipRight) BG1, BG2 and sprites are not
   // drawn (used to hide what lies beyond the level edges in widescreen)
   int clipLeft, clipRight;
@@ -189,20 +213,16 @@ struct Ppu {
   // dark backing and the pass box are windows)
   bool windowFixed;
   uint8_t debugLayerMask; // bit n set = hide layer n (0-3 bg, 4 obj), debugging aid
-  // per-scanline scroll values of the last rendered frame (for frontend analysis)
-  uint16_t lineHScroll[PPU_BUF_H][4];
-  uint16_t lineVScroll[PPU_BUF_H][4];
   // writes to each BGn-HOFS so far, and per scanline: a line whose count differs
   // from the first line's was scrolled by a write in the middle of the frame
   uint8_t hScrollWrites[4];
-  uint8_t lineHWrites[PPU_BUF_H][4];
-  uint8_t lineMode[PPU_BUF_H];          // BG mode of each scanline
-  uint16_t lineBg3Map[PPU_BUF_H];       // BG3 tilemap address of each scanline
   int bgRemapLayer;
-  bool bgRemapLineActive[PPU_BUF_H];
-  bool bgRemapLineContent[PPU_BUF_H];   // ...and the overlay shows something there
-  bool bgRemapLineHud[PPU_BUF_H];       // ...and it is the HUD (re-anchored), not a fixed overlay
-  int16_t bgRemapSrc[PPU_BUF_H][PPU_BUF_W];
+  uint8_t ppuSnapLast;     // (marks the end of the per-line snapshot)
+
+  // ---- not snapshotted (main thread only)
+  // called for every word the game writes into VRAM through the data port
+  void (*vramWriteHook)(void* ctx, uint16_t wordAdr);
+  void* vramWriteCtx;
   // optional per-sprite hook, lets the frontend move sprites (HUD re-anchoring).
   // Called during sprite evaluation with the oam index (0-127) and the decoded
   // position; returns the x position to draw at.
@@ -221,5 +241,16 @@ void ppu_runLine(Ppu* ppu, int line);
 uint8_t ppu_read(Ppu* ppu, uint8_t adr);
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val);
 void ppu_latchHV(Ppu* ppu);
+
+// draws one scanline from the state in ppu (what ppu_runLine does after sprite evaluation)
+void ppu_renderLine(Ppu* ppu, int line);
+// Writes into VRAM that do not come through ppu_write (the frontend's widescreen patches):
+// the value goes into ppu->vram and, when threaded rendering is on, to the workers.
+void ppu_vramStore(Ppu* ppu, uint16_t wordAdr, uint16_t value);
+// The finished picture of the last frame (PPU_BUF_W x PPU_BUF_H xRGB8888). With threaded rendering
+// this waits for the workers; the pointer stays valid until the next frame starts drawing.
+const uint32_t* ppu_pixels(Ppu* ppu);
+
+#include "ppu_mt.h"
 
 #endif

@@ -160,6 +160,8 @@ static void cpu_idleWait(Cpu* cpu) {
   cpu->idle(cpu->mem, true);
 }
 
+
+
 static void cpu_checkInt(Cpu* cpu) {
   cpu->intWanted = (cpu->nmiWanted || (cpu->irqWanted && !cpu->i)) && !cpu->intDelay;
   cpu->intDelay = false;

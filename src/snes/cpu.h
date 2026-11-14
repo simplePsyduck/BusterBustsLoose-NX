@@ -53,7 +53,6 @@ struct Cpu {
   void (*hookFn)(void* ctx, uint32_t pc);
   void* hookCtx;
 };
-
 static inline void cpu_setHook(Cpu* cpu, uint32_t pc) { cpu->hookBits[(pc & 0xffff) >> 3] |= 1 << (pc & 7); }
 
 Cpu* cpu_init(void* mem, CpuReadHandler read, CpuWriteHandler write, CpuIdleHandler idle);

@@ -409,10 +409,13 @@ static void dsp_handleGain(Dsp* dsp, int ch) {
 static int16_t dsp_getSample(Dsp* dsp, int ch) {
   int pos = (dsp->channel[ch].pitchCounter >> 12) + dsp->channel[ch].bufferOffset;
   int offset = (dsp->channel[ch].pitchCounter >> 4) & 0xff;
-  int16_t news = dsp->channel[ch].decodeBuffer[(pos + 3) % 12];
-  int16_t olds = dsp->channel[ch].decodeBuffer[(pos + 2) % 12];
-  int16_t olders = dsp->channel[ch].decodeBuffer[(pos + 1) % 12];
-  int16_t oldests = dsp->channel[ch].decodeBuffer[pos % 12];
+  static const uint8_t mod12[24] = { 0,1,2,3,4,5,6,7,8,9,10,11, 0,1,2,3,4,5,6,7,8,9,10,11 };
+  pos &= 15;   // (it is at most 15; a damaged save state must not index outside the table)
+  const int16_t* db = dsp->channel[ch].decodeBuffer;
+  int16_t news = db[mod12[pos + 3]];
+  int16_t olds = db[mod12[pos + 2]];
+  int16_t olders = db[mod12[pos + 1]];
+  int16_t oldests = db[mod12[pos]];
   int out = (gaussValues[0xff - offset] * oldests) >> 11;
   out += (gaussValues[0x1ff - offset] * olders) >> 11;
   out += (gaussValues[0x100 + offset] * olds) >> 11;
